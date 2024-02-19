@@ -3,3 +3,4 @@ nltk
 numpy
 Pillow
 argparse
+nvflare~=2.4.0rc

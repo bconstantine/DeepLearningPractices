@@ -9,6 +9,8 @@ class EncoderCNN(nn.Module):
         """Load the pretrained ResNet-152 and replace top fc layer."""
         super(EncoderCNN, self).__init__()
         resnet = models.resnet152(pretrained=True)
+        for param in resnet.parameters():
+            param.requires_grad = False
         modules = list(resnet.children())[:-1]      # delete the last fc layer.
         self.resnet = nn.Sequential(*modules)
         self.linear = nn.Linear(resnet.fc.in_features, embed_size)
@@ -30,7 +32,7 @@ class DecoderRNN(nn.Module):
         self.embed = nn.Embedding(vocab_size, embed_size)
         self.lstm = nn.LSTM(embed_size, hidden_size, num_layers, batch_first=True)
         self.linear = nn.Linear(hidden_size, vocab_size)
-        self.max_seg_length = max_seq_length
+        self.max_seq_length = max_seq_length
         
     def forward(self, features, captions, lengths):
         """Decode image feature vectors and generates captions."""
@@ -45,7 +47,7 @@ class DecoderRNN(nn.Module):
         """Generate captions for given image features using greedy search."""
         sampled_ids = []
         inputs = features.unsqueeze(1)
-        for i in range(self.max_seg_length):
+        for i in range(self.max_seq_length):
             hiddens, states = self.lstm(inputs, states)          # hiddens: (batch_size, 1, hidden_size)
             outputs = self.linear(hiddens.squeeze(1))            # outputs:  (batch_size, vocab_size)
             _, predicted = outputs.max(1)                        # predicted: (batch_size)

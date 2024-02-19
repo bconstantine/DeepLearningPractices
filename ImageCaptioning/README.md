@@ -10,46 +10,50 @@ In the test phase, the encoder part is almost same as the training phase. The on
 
 
 
-## Usage 
-
-
-#### 1. Clone the repositories
+## Step by step usage
+#### 1. Install Dependencies
+##### a. Install Pycocotools
 ```bash
 git clone https://github.com/pdollar/coco.git
 cd coco/PythonAPI/
 make
 python setup.py build
 python setup.py install
-cd ../../
-git clone https://github.com/yunjey/pytorch-tutorial.git
-cd pytorch-tutorial/tutorials/03-advanced/image_captioning/
+```
+
+##### b. Install requirements.txt
+```bash
+pip install -r requirements.txt
+```
+
+##### c. Download the COCO Dataset
+```bash
+pip install -r requirements.txt
 ```
 
 #### 2. Download the dataset
-
+First, download the annotations for COCO Captions train and val 2014
 ```bash
-pip install -r requirements.txt
 chmod +x download.sh
 ./download.sh
 ```
 
-#### 3. Preprocessing
-
+#### 3. Preprocessing:
+Build Vocabulary (word and idx mapping) and image resize for training. By default it build vocab for every token (using NLTK Tokenizer) when a token appear >= 4 (from COCO Captions) and resize all train images to 256 x 256
 ```bash
 python build_vocab.py   
-python resize.py
+python resize_train_image.py
 ```
 
-#### 4. Train the model
-
+#### 4. Train the model (With mock Federated Learning Applied)
 ```bash
 python train.py    
 ```
 
-#### 5. Test the model 
+#### 5. Test the model (With Quantization applied)
 
 ```bash
-python sample.py --image='png/example.png'
+python inference.py --image='png/example.png'
 ```
 
 <br>

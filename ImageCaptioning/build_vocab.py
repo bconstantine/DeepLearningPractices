@@ -6,7 +6,7 @@ from pycocotools.coco import COCO
 
 
 class Vocabulary(object):
-    """Simple vocabulary wrapper."""
+    """Vocabulary word and index converter."""
     def __init__(self):
         self.word2idx = {}
         self.idx2word = {}
@@ -19,22 +19,21 @@ class Vocabulary(object):
             self.idx += 1
 
     def __call__(self, word):
-        if not word in self.word2idx:
-            return self.word2idx['<unk>']
-        return self.word2idx[word]
+        return self.word2idx.get(word, self.word2idx['<unk>'])
 
     def __len__(self):
         return len(self.word2idx)
 
-def build_vocab(json, threshold):
-    """Build a simple vocabulary wrapper."""
+def init_vocab(json, threshold):
+    """Initialize Vocabulary.
+    json = file path to annotations/captions_train2014.json"""
     coco = COCO(json)
     counter = Counter()
-    ids = coco.anns.keys()
+    ids = coco.anns.keys() #retrieve the keys from the annotations dictionary
     for i, id in enumerate(ids):
-        caption = str(coco.anns[id]['caption'])
-        tokens = nltk.tokenize.word_tokenize(caption.lower())
-        counter.update(tokens)
+        caption = str(coco.anns[id]['caption']) #access the captions
+        tokens = nltk.tokenize.word_tokenize(caption.lower()) #tokenize using nltk
+        counter.update(tokens) #count the frequency of each word
 
         if (i+1) % 1000 == 0:
             print("[{}/{}] Tokenized the captions.".format(i+1, len(ids)))
@@ -55,7 +54,7 @@ def build_vocab(json, threshold):
     return vocab
 
 def main(args):
-    vocab = build_vocab(json=args.caption_path, threshold=args.threshold)
+    vocab = init_vocab(json=args.caption_path, threshold=args.threshold)
     vocab_path = args.vocab_path
     with open(vocab_path, 'wb') as f:
         pickle.dump(vocab, f)
