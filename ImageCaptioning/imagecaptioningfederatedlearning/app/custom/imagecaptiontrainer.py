@@ -49,7 +49,7 @@ class ImageCaptionTrainer(Executor):
         self.training_setup['decoder'].to(self.training_setup['device'])
         params = list(self.training_setup['decoder'].parameters()) + list(self.training_setup['encoder'].parameters()) + list(self.training_setup['encoder'].bn.parameters())
         self.training_setup['optimizer'] = torch.optim.Adam(params, lr=appConstants.EXECUTABLE_ARGS['learning_rate'])
-        self.training_setup['train_loader'] = get_loader(appConstants.EXECUTABLE_ARGS['image_dir'], appConstants.EXECUTABLE_ARGS['caption_path'], vocab, 
+        self.training_setup['train_loader'] = get_loader(appConstants.EXECUTABLE_ARGS['train_image_dir'], appConstants.EXECUTABLE_ARGS['caption_path'], vocab, 
                              self.training_setup['transform'], appConstants.EXECUTABLE_ARGS['batch_size'],
                              shuffle=True, num_workers=appConstants.EXECUTABLE_ARGS['num_workers']) 
     def _local_train(self, fl_ctx, weights, abort_signal):
