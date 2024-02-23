@@ -30,7 +30,7 @@
       },
       {
         "id": "model_locator",
-        "path": "pt_model_locator.PTModelLocator",
+        "path": "ptmodellocator.PTModelLocator",
         "args": {}
       },
       {
