@@ -5,17 +5,15 @@
     {
       "tasks": ["train", "submit_model", "get_weights"],
       "executor": {
-        "path": "cifar10trainer.Cifar10Trainer",
+        "path": "imagecaptiontrainer.ImageCaptionTrainer",
         "args": {
-          "lr": 0.01,
-          "epochs": 1
         }
       }
     },
     {
       "tasks": ["validate"],
       "executor": {
-        "path": "cifar10validator.Cifar10Validator",
+        "path": "imagecaptionvalidator.ImageCaptionValidator",
         "args": {
         }
       }

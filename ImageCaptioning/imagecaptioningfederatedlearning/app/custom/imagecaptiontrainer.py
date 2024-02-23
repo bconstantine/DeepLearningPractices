@@ -7,15 +7,19 @@ import os
 import pickle
 from data_loader import get_loader 
 from build_vocab import Vocabulary
-from model import EncoderCNN, DecoderRNN
+from model import EncoderCNN, DecoderRNN, ImageCaptioningModel
 from torch.nn.utils.rnn import pack_padded_sequence
 from torchvision import transforms
 
 import appConstants
-from nvflare.apis.executor import Executor
+from nvflare.apis.shareable import Shareable, make_reply #nvflare communicate weights in Shareable format
+from nvflare.apis.dxo import DXO, DataKind, from_shareable #dxo communicate the shareable
+from nvflare.apis.executor import Executor #task to be executed
 from nvflare.app_common.app_constant import AppConstants
 from nvflare.apis.fl_constant import ReservedKey, ReturnCode
 from nvflare.apis.fl_context import FLContext
+from nvflare.apis.signal import Signal
+from nvflare.app_common.abstract.model import make_model_learnable, model_learnable_to_dxo
 from nvflare.app_opt.pt.model_persistence_format_manager import PTModelPersistenceFormatManager
 
 class ImageCaptionTrainer(Executor):
@@ -34,8 +38,7 @@ class ImageCaptionTrainer(Executor):
 
         # Training setup
         self.training_setup = {
-            'encoder':EncoderCNN(appConstants.EXECUTABLE_ARGS['embed_size']),
-            'decoder':DecoderRNN(appConstants.EXECUTABLE_ARGS['embed_size'], appConstants.EXECUTABLE_ARGS['hidden_size'], len(vocab), appConstants.EXECUTABLE_ARGS['num_layers']),
+            'model': ImageCaptioningModel(appConstants.EXECUTABLE_ARGS['embed_size'], appConstants.EXECUTABLE_ARGS['hidden_size'], len(vocab), appConstants.EXECUTABLE_ARGS['num_layers']),
             'device': torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
             'loss': nn.CrossEntropyLoss(),
             'transform': transforms.Compose([ 
@@ -43,131 +46,154 @@ class ImageCaptionTrainer(Executor):
                 transforms.RandomHorizontalFlip(), 
                 transforms.ToTensor(), 
                 transforms.Normalize((0.485, 0.456, 0.406), 
-                                    (0.229, 0.224, 0.225))])
+                                    (0.229, 0.224, 0.225))]), 
+            'criterion': nn.CrossEntropyLoss(),
         }
-        self.training_setup['encoder'].to(self.training_setup['device'])
-        self.training_setup['decoder'].to(self.training_setup['device'])
-        params = list(self.training_setup['decoder'].parameters()) + list(self.training_setup['encoder'].parameters()) + list(self.training_setup['encoder'].bn.parameters())
-        self.training_setup['optimizer'] = torch.optim.Adam(params, lr=appConstants.EXECUTABLE_ARGS['learning_rate'])
+        self.training_setup['model'].to(self.training_setup['device'])
+        self.training_setup['optimizer'] = torch.optim.Adam(self.training_setup['model'].parameters(), lr=appConstants.EXECUTABLE_ARGS['learning_rate'])
         self.training_setup['train_loader'] = get_loader(appConstants.EXECUTABLE_ARGS['train_image_dir'], appConstants.EXECUTABLE_ARGS['caption_path'], vocab, 
                              self.training_setup['transform'], appConstants.EXECUTABLE_ARGS['batch_size'],
                              shuffle=True, num_workers=appConstants.EXECUTABLE_ARGS['num_workers']) 
+        
+        # to save the PT model from NVFlare api
+        # The default training configuration is used by persistence manager
+        # in case no initial model is found.
+        self._default_train_conf = {"train": {"model": type(self.training_setup['model']).__name__}}
+        self.persistence_manager = PTModelPersistenceFormatManager(
+            data=self.training_setup['model'].state_dict(), default_train_conf=self._default_train_conf
+        )
+    def execute(self, task_name: str, shareable: Shareable, fl_ctx: FLContext, abort_signal: Signal) -> Shareable:
+        """NVFlare executor entry point.
+        
+        Args are taken directly as recommended from NVFlare documentation.
+        
+        DXO (Data Exchange Object): A standardized container for data exchange in NVFlare, 
+                                    facilitating consistent data handling and manipulation 
+                                    across federated learning systems.
+        Shareable: A communication medium in NVFlare for exchanging data 
+                    and commands between the server and clients, ensuring data integrity 
+                    and standardization.
+        FLContext: Provides contextual information within NVFlare, 
+                    supporting the coordination and execution of federated learning tasks 
+                    by passing essential state and configuration details.
+        """
+        try:
+            if task_name == self._pre_train_task_name:
+                # Get the new state dict and send as weights
+                return self._get_model_weights()
+            elif task_name == self._train_task_name:
+                # Execute training task on local, and return their weights after training loop
+                try:
+                    dxo = from_shareable(shareable)
+                except:
+                    self.log_error(fl_ctx, "Unable to extract dxo from shareable.")
+                    return make_reply(ReturnCode.BAD_TASK_DATA)
+
+                if not dxo.data_kind == DataKind.WEIGHTS:
+                    self.log_error(fl_ctx, f"data_kind expected WEIGHTS but got {dxo.data_kind} instead.")
+                    return make_reply(ReturnCode.BAD_TASK_DATA)
+
+                # Convert weights to tensor. Run training
+                torch_weights = {k: torch.as_tensor(v) for k, v in dxo.data.items()}
+                self._local_train(fl_ctx, torch_weights, abort_signal)
+
+                # Check the abort_signal after training.
+                # local_train returns early if abort_signal is triggered.
+                if abort_signal.triggered:
+                    return make_reply(ReturnCode.TASK_ABORTED)
+
+                # Save the local model after training.
+                self._save_local_model(fl_ctx)
+
+                # Get the new state dict and send as weights
+                return self._get_model_weights()
+            elif task_name == self._submit_model_task_name:
+                # Load local model
+                ml = self._load_local_model(fl_ctx)
+
+                # Get the model parameters and create dxo from it
+                dxo = model_learnable_to_dxo(ml)
+                return dxo.to_shareable()
+            else:
+                return make_reply(ReturnCode.TASK_UNKNOWN)
+        except Exception as e:
+            self.log_exception(fl_ctx, f"Exception in simple trainer: {e}.")
+            return make_reply(ReturnCode.EXECUTION_EXCEPTION)
+        
     def _local_train(self, fl_ctx, weights, abort_signal):
+        """Local training loop for the model.
+
+        Args are the same as execute method, and is expected to be called inside it
+        """
         # Load weights into both models
-        encoder_weights = {k: v for k, v in weights.items() if k.startswith('encoder')}
-        decoder_weights = {k: v for k, v in weights.items() if k.startswith('decoder')}
-        self.training_setup['encoder'].load_state_dict(encoder_weights)
-        self.training_setup['decoder'].load_state_dict(decoder_weights)
+        self.model.load_state_dict(state_dict=weights)
 
         # Training loop modification to use both encoder and decoder
         # Basic training
-        self.training_setup['encoder'].train()
-        self.training_setup['decoder'].train()
-        for epoch in range(self._epochs):
+        self.model.train()
+        total_step = len(self.training_setup['train_loader'])
+        for epoch in range(appConstants.EXECUTABLE_ARGS['num_epochs']):
             running_loss = 0.0
-            for i, batch in enumerate(self.training_setup['train_loader']):
+            running_perplexity = 0.0
+            for i, (images, captions, lengths) in enumerate(self.training_setup['train_loader']):
                 if abort_signal.triggered:
                     # If abort_signal is triggered, we simply return.
                     # The outside function will check it again and decide steps to take.
                     return
-
-                images, labels = batch[0].to(self.device), batch[1].to(self.device)
-                self.optimizer.zero_grad()
-
-                predictions = self.model(images)
-                cost = self.loss(predictions, labels)
-                cost.backward()
-                self.optimizer.step()
-
-                running_loss += cost.cpu().detach().numpy() / images.size()[0]
-                if i % 3000 == 0:
-                    self.log_info(
-                        fl_ctx, f"Epoch: {epoch}/{self._epochs}, Iteration: {i}, " f"Loss: {running_loss/3000}"
-                    )
+                
+                # Set mini-batch dataset
+                images = images.to(self.training_setup['device'])
+                captions = captions.to(self.training_setup['device'])
+                targets = pack_padded_sequence(captions, lengths, batch_first=True)[0] #captions padded with same sequence length
+                
+                # Forward, backward and optimize
+                outputs = self.training_setup['model'](images, captions, lengths)
+                loss = self.training_setup['criterion'](outputs, targets)
+                self.training_setup['optimizer'].zero_grad()
+                loss.backward()
+                self.training_setup['optimizer'].step()
+                
+                lossAmount = loss.item()
+                perplexity = np.exp(lossAmount)
+                running_loss += lossAmount / appConstants.EXECUTABLE_ARGS['log_step']
+                running_perplexity += perplexity / appConstants.EXECUTABLE_ARGS['log_step']
+                # Print log info
+                if i % appConstants.EXECUTABLE_ARGS['log_step'] == 0:
+                    print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Running Loss: {:.4f}, Perplexity: {:5.4f}, Running Perplexity: {:5.4f}'
+                        .format(epoch, appConstants.EXECUTABLE_ARGS['num_epochs'], i, total_step, lossAmount, running_loss, perplexity, running_perplexity)) 
                     running_loss = 0.0
+                    running_perplexity = 0.0
 
     def _save_local_model(self, fl_ctx: FLContext):
+        """Saving local model
+
+        Args are from execute method, and function is expected to be called inside it
+        NVFLare will dictate when to save the model
+        """
         run_dir = fl_ctx.get_engine().get_workspace().get_run_dir(fl_ctx.get_prop(ReservedKey.RUN_NUM))
-        models_dir = os.path.join(run_dir, PTConstants.PTModelsDir)
+        models_dir = os.path.join(run_dir,appConstants.EXECUTABLE_ARGS['PTModelsDir']) #all models folder
         if not os.path.exists(models_dir):
             os.makedirs(models_dir)
-        model_path = os.path.join(models_dir, PTConstants.PTLocalModelName)
+        model_path = os.path.join(models_dir, appConstants.EXECUTABLE_ARGS['PTLocalModelName']) #local model path
 
         ml = make_model_learnable(self.model.state_dict(), {})
         self.persistence_manager.update(ml)
         torch.save(self.persistence_manager.to_persistence_dict(), model_path)
 
     def _load_local_model(self, fl_ctx: FLContext):
+        """Loading local model
+
+        Args are from execute method, and function is expected to be called inside it
+        NVFLare will dictate when to save the model
+        """
         run_dir = fl_ctx.get_engine().get_workspace().get_run_dir(fl_ctx.get_prop(ReservedKey.RUN_NUM))
-        models_dir = os.path.join(run_dir, PTConstants.PTModelsDir)
+        models_dir = os.path.join(run_dir, appConstants.EXECUTABLE_ARGS['PTModelsDir'])
         if not os.path.exists(models_dir):
             return None
-        model_path = os.path.join(models_dir, PTConstants.PTLocalModelName)
+        model_path = os.path.join(models_dir, appConstants.EXECUTABLE_ARGS['PTLocalModelName'])
 
         self.persistence_manager = PTModelPersistenceFormatManager(
             data=torch.load(model_path), default_train_conf=self._default_train_conf
         )
         ml = self.persistence_manager.to_model_learnable(exclude_vars=self._exclude_vars)
         return ml
-
-# Device configuration
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-def main(args):
-    # Create model directory
-    if not os.path.exists(args.model_path):
-        os.makedirs(args.model_path)
-    
-    # Image preprocessing, normalization for the pretrained resnet
-    transform = transforms.Compose([ 
-        transforms.RandomCrop(args.crop_size),
-        transforms.RandomHorizontalFlip(), 
-        transforms.ToTensor(), 
-        transforms.Normalize((0.485, 0.456, 0.406), 
-                             (0.229, 0.224, 0.225))])
-    
-    # Load vocabulary wrapper
-    with open(args.vocab_path, 'rb') as f:
-        vocab = pickle.load(f)
-    
-    
-
-    # Build the models
-    encoder = EncoderCNN(args.embed_size).to(device)
-    decoder = DecoderRNN(args.embed_size, args.hidden_size, len(vocab), args.num_layers).to(device)
-    
-    # Loss and optimizer
-    criterion = nn.CrossEntropyLoss()
-    params = list(decoder.parameters()) + list(encoder.linear.parameters()) + list(encoder.bn.parameters())
-    optimizer = torch.optim.Adam(params, lr=args.learning_rate)
-    
-    # Train the models
-    total_step = len(data_loader)
-    for epoch in range(args.num_epochs):
-        for i, (images, captions, lengths) in enumerate(data_loader):
-            
-            # Set mini-batch dataset
-            images = images.to(device)
-            captions = captions.to(device)
-            targets = pack_padded_sequence(captions, lengths, batch_first=True)[0]
-            
-            # Forward, backward and optimize
-            features = encoder(images)
-            outputs = decoder(features, captions, lengths)
-            loss = criterion(outputs, targets)
-            decoder.zero_grad()
-            encoder.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            # Print log info
-            if i % args.log_step == 0:
-                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Perplexity: {:5.4f}'
-                      .format(epoch, args.num_epochs, i, total_step, loss.item(), np.exp(loss.item()))) 
-                
-            # Save the model checkpoints
-            if (i+1) % args.save_step == 0:
-                torch.save(decoder.state_dict(), os.path.join(
-                    args.model_path, 'decoder-{}-{}.ckpt'.format(epoch+1, i+1)))
-                torch.save(encoder.state_dict(), os.path.join(
-                    args.model_path, 'encoder-{}-{}.ckpt'.format(epoch+1, i+1)))

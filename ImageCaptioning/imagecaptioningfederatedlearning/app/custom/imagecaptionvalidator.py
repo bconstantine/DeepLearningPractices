@@ -6,27 +6,31 @@ import pickle
 import os
 from torchvision import transforms 
 from build_vocab import Vocabulary
-from model import EncoderCNN, DecoderRNN
+from model import EncoderCNN, DecoderRNN, ImageCaptioningModel
 from PIL import Image
+import appConstants
+import torch.nn as nn
+from data_loader import get_loader
+from torch.nn.utils.rnn import pack_padded_sequence
 
+from nvflare.apis.flcontext import FLContext, Signal, ReturnCode
 from nvflare.apis.shareable import Shareable, make_reply #nvflare communicate weights in Shareable format
 from nvflare.apis.dxo import DXO, DataKind, from_shareable #dxo communicate the shareable
 from nvflare.apis.executor import Executor #task to be executed
 import appConstants
 
 class ImageCaptionValidator(Executor):
-    def __init__(self, data_path="~/data", validate_task_name=appConstants.TASK_VALIDATION):
+    def __init__(self):
         super().__init__()
 
-        self._validate_task_name = validate_task_name
+        self._validate_task_name = appConstants.TASK_VALIDATION
 
         # Setup the model# Load vocabulary wrapper
         with open(appConstants.EXECUTABLE_ARGS['vocab_path'], 'rb') as f:
             vocab = pickle.load(f)
 
         self.validating_setup = {
-            'encoder':EncoderCNN(appConstants.EXECUTABLE_ARGS['embed_size']),
-            'decoder':DecoderRNN(appConstants.EXECUTABLE_ARGS['embed_size'], appConstants.EXECUTABLE_ARGS['hidden_size'], len(vocab), appConstants.EXECUTABLE_ARGS['num_layers']),
+            'model': ImageCaptioningModel(appConstants.EXECUTABLE_ARGS['embed_size'], appConstants.EXECUTABLE_ARGS['hidden_size'], len(vocab), appConstants.EXECUTABLE_ARGS['num_layers']),
             'device': torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
             'loss': nn.CrossEntropyLoss(),
             'transform': transforms.Compose([ 
@@ -36,13 +40,27 @@ class ImageCaptionValidator(Executor):
                 transforms.Normalize((0.485, 0.456, 0.406), 
                                     (0.229, 0.224, 0.225))])
         }
-        self.validating_setup['encoder'].to(self.validating_setup['device'])
-        self.validating_setup['decoder'].to(self.validating_setup['device'])
+        self.validating_setup['model'].to(self.validating_setup['device'])
 
-        test_data = CIFAR10(root=data_path, train=False, transform=transforms)
-        self._test_loader = DataLoader(test_data, batch_size=4, shuffle=False)
+        self.validating_setup['val_loader'] = get_loader(appConstants.EXECUTABLE_ARGS['validate_image_dir'], appConstants.EXECUTABLE_ARGS['validate_caption_path'], vocab, 
+                             self.training_setup['transform'], appConstants.EXECUTABLE_ARGS['batch_size'],
+                             shuffle=True, num_workers=appConstants.EXECUTABLE_ARGS['num_workers']) 
 
     def execute(self, task_name: str, shareable: Shareable, fl_ctx: FLContext, abort_signal: Signal) -> Shareable:
+        """NVFlare executor entry point.
+        
+        Args are taken directly as recommended from NVFlare documentation.
+        
+        DXO (Data Exchange Object): A standardized container for data exchange in NVFlare, 
+                                    facilitating consistent data handling and manipulation 
+                                    across federated learning systems.
+        Shareable: A communication medium in NVFlare for exchanging data 
+                    and commands between the server and clients, ensuring data integrity 
+                    and standardization.
+        FLContext: Provides contextual information within NVFlare, 
+                    supporting the coordination and execution of federated learning tasks 
+                    by passing essential state and configuration details.
+        """
         if task_name == self._validate_task_name:
             model_owner = "?"
             try:
@@ -58,8 +76,8 @@ class ImageCaptionValidator(Executor):
                     return make_reply(ReturnCode.BAD_TASK_DATA)
 
                 # Extract weights and ensure they are tensor.
-                model_owner = shareable.get_header(AppConstants.MODEL_OWNER, "?")
-                weights = {k: torch.as_tensor(v, device=self.device) for k, v in dxo.data.items()}
+                model_owner = shareable.get_header(appConstants.MODEL_OWNER, "?")
+                weights = {k: torch.as_tensor(v, device=self.validating_setup['device']) for k, v in dxo.data.items()}
 
                 # Get validation accuracy
                 val_accuracy = self._validate(weights, abort_signal)
@@ -82,95 +100,42 @@ class ImageCaptionValidator(Executor):
             return make_reply(ReturnCode.TASK_UNKNOWN)
 
     def _validate(self, weights, abort_signal):
-        self.model.load_state_dict(weights)
-
-        self.model.eval()
-
-        correct = 0
-        total = 0
+        """Validate pipeline for the model
+        
+        Args are taken directly as recommended from NVFlare documentation."""
+        self.validating_setup['model'].load_state_dict(weights)
+        self.validating_setup['model'].eval()
+        total_loss = 0.0
+        total_step = len(self.validating_setup['val_loader'])
         with torch.no_grad():
-            for i, (images, labels) in enumerate(self._test_loader):
+            running_loss = 0.0
+            running_perplexity = 0.0
+            for i, (images, captions, lengths) in enumerate(self.validating_setup['val_loader']):
                 if abort_signal.triggered:
                     return 0
+                
+                # Set mini-batch dataset
+                images = images.to(self.validating_setup['device'])
+                captions = captions.to(self.validating_setup['device'])
+                targets = pack_padded_sequence(captions, lengths, batch_first=True)[0] #captions padded with same sequence length
+                
+                # Forward, backward and optimize
+                outputs = self.validating_setup['model'](images, captions, lengths)
+                loss = self.validating_setup['criterion'](outputs, targets)
+                self.validating_setup['optimizer'].zero_grad()
+                loss.backward()
+                self.validating_setup['optimizer'].step()
+                
+                lossAmount = loss.item()
+                perplexity = np.exp(lossAmount)
+                total_loss += lossAmount
+                running_loss += lossAmount / appConstants.EXECUTABLE_ARGS['log_step']
+                running_perplexity += perplexity / appConstants.EXECUTABLE_ARGS['log_step']
+                # Print log info
+                if i % appConstants.EXECUTABLE_ARGS['validating_step'] == 0:
+                    print('Validating step Step [{}/{}], Loss: {:.4f}, Running Loss: {:.4f}, Perplexity: {:5.4f}, Running Perplexity: {:5.4f}'
+                        .format(i, total_step, lossAmount, running_loss, perplexity, running_perplexity)) 
+                    running_loss = 0.0
+                    running_perplexity = 0.0
 
-                images, labels = images.to(self.device), labels.to(self.device)
-                output = self.model(images)
-
-                _, pred_label = torch.max(output, 1)
-
-                correct += (pred_label == labels).sum().item()
-                total += images.size()[0]
-
-            metric = correct / float(total)
-
-        return metric
-
-# Device configuration
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-def load_image(image_path, transform=None):
-    image = Image.open(image_path).convert('RGB')
-    image = image.resize([224, 224], Image.LANCZOS)
-    
-    if transform is not None:
-        image = transform(image).unsqueeze(0)
-    
-    return image
-
-def main(args):
-    # Image preprocessing
-    transform = transforms.Compose([
-        transforms.ToTensor(), 
-        transforms.Normalize((0.485, 0.456, 0.406), 
-                             (0.229, 0.224, 0.225))])
-    
-    # Load vocabulary wrapper
-    with open(args.vocab_path, 'rb') as f:
-        vocab = pickle.load(f)
-
-    # Build models
-    encoder = EncoderCNN(args.embed_size).eval()  # eval mode (batchnorm uses moving mean/variance)
-    decoder = DecoderRNN(args.embed_size, args.hidden_size, len(vocab), args.num_layers)
-    encoder = encoder.to(device)
-    decoder = decoder.to(device)
-
-    # Load the trained model parameters
-    encoder.load_state_dict(torch.load(args.encoder_path))
-    decoder.load_state_dict(torch.load(args.decoder_path))
-
-    # Prepare an image
-    image = load_image(args.image, transform)
-    image_tensor = image.to(device)
-    
-    # Generate an caption from the image
-    feature = encoder(image_tensor)
-    sampled_ids = decoder.sample(feature)
-    sampled_ids = sampled_ids[0].cpu().numpy()          # (1, max_seq_length) -> (max_seq_length)
-    
-    # Convert word_ids to words
-    sampled_caption = []
-    for word_id in sampled_ids:
-        word = vocab.idx2word[word_id]
-        sampled_caption.append(word)
-        if word == '<end>':
-            break
-    sentence = ' '.join(sampled_caption)
-    
-    # Print out the image and the generated caption
-    print (sentence)
-    image = Image.open(args.image)
-    plt.imshow(np.asarray(image))
-    
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--image', type=str, required=True, help='input image for generating caption')
-    parser.add_argument('--encoder_path', type=str, default='models/encoder-5-3000.pkl', help='path for trained encoder')
-    parser.add_argument('--decoder_path', type=str, default='models/decoder-5-3000.pkl', help='path for trained decoder')
-    parser.add_argument('--vocab_path', type=str, default='data/vocab.pkl', help='path for vocabulary wrapper')
-    
-    # Model parameters (should be same as paramters in train.py)
-    parser.add_argument('--embed_size', type=int , default=256, help='dimension of word embedding vectors')
-    parser.add_argument('--hidden_size', type=int , default=512, help='dimension of lstm hidden states')
-    parser.add_argument('--num_layers', type=int , default=1, help='number of layers in lstm')
-    args = parser.parse_args()
-    main(args)
+        return total_loss/total_step

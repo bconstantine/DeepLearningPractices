@@ -4,6 +4,7 @@ import torchvision.models as models
 from torch.nn.utils.rnn import pack_padded_sequence
 
 
+
 class EncoderCNN(nn.Module):
     def __init__(self, embed_size):
         """Load the pretrained ResNet-152 and replace top fc layer."""
@@ -55,4 +56,31 @@ class DecoderRNN(nn.Module):
             inputs = self.embed(predicted)                       # inputs: (batch_size, embed_size)
             inputs = inputs.unsqueeze(1)                         # inputs: (batch_size, 1, embed_size)
         sampled_ids = torch.stack(sampled_ids, 1)                # sampled_ids: (batch_size, max_seq_length)
+        return sampled_ids
+    
+class ImageCaptioningModel(nn.Module):
+    # use the EncoderCNN and DecoderRNN to create a model
+    def __init__(self, embed_size, decoder_hidden_size, decoder_vocab_size, decoder_num_layers, decoder_max_seq_length=20):
+        super(ImageCaptioningModel, self).__init__()
+        self.encoder = EncoderCNN(embed_size)
+        self.decoder = DecoderRNN(embed_size, decoder_hidden_size, decoder_vocab_size, decoder_num_layers, decoder_max_seq_length)
+    
+    def forward(self, images, captions, length):
+        """
+        Forward pass through the entire model: images -> EncoderCNN -> DecoderRNN -> captions
+        """
+        # Pass the images through the encoder
+        features = self.encoderCNN(images)
+        # Pass the features and captions through the decoder
+        outputs = self.decoderRNN(features, captions, length)
+        return outputs
+    def sample(self, images):
+        """
+        Generate captions for given image features using greedy search.
+        """
+        # Pass the images through the encoder to get features
+        features = self.encoderCNN(images)
+        
+        # Generate captions using greedy search
+        sampled_ids = self.decoderRNN.sample(features)
         return sampled_ids
