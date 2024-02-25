@@ -17,6 +17,15 @@ class Vocabulary(object):
             self.word2idx[word] = self.idx
             self.idx2word[self.idx] = word
             self.idx += 1
+    def save_to_file(self, filepath):
+        """Save the vocabulary to a file."""
+        with open(filepath, 'wb') as file:
+            pickle.dump((self.word2idx, self.idx2word, self.idx), file)
+
+    def load_from_file(self, filepath):
+        """Load the vocabulary from a file."""
+        with open(filepath, 'rb') as file:
+            self.word2idx, self.idx2word, self.idx = pickle.load(file)
 
     def __call__(self, word):
         return self.word2idx.get(word, self.word2idx['<unk>'])
@@ -53,11 +62,21 @@ def init_vocab(json, threshold):
         vocab.add_word(word)
     return vocab
 
+def build_vocab_main(caption_path, threshold):
+    vocab = init_vocab(json=caption_path, threshold=threshold)
+    return vocab
+
+def load_vocab_from_another_file(file_path):
+    new_vocab = Vocabulary()
+    new_vocab.load_from_file(file_path)
+    return new_vocab
+
 def main(args):
     vocab = init_vocab(json=args.caption_path, threshold=args.threshold)
     vocab_path = args.vocab_path
-    with open(vocab_path, 'wb') as f:
-        pickle.dump(vocab, f)
+    # with open(vocab_path, 'wb') as f:
+    #     pickle.dump(vocab, f)
+    vocab.save_to_file(vocab_path)
     print("Total vocabulary size: {}".format(len(vocab)))
     print("Saved the vocabulary wrapper to '{}'".format(vocab_path))
 
@@ -65,9 +84,9 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--caption_path', type=str, 
-                        default='data/annotations/captions_train2014.json', 
+                        default='../../../data/annotations/captions_train2014.json', 
                         help='path for train annotation file')
-    parser.add_argument('--vocab_path', type=str, default='./data/vocab.pkl', 
+    parser.add_argument('--vocab_path', type=str, default='./vocab_property.pkl', 
                         help='path for saving vocabulary wrapper')
     parser.add_argument('--threshold', type=int, default=4, 
                         help='minimum word count threshold')

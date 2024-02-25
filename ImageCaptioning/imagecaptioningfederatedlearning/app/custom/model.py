@@ -70,17 +70,17 @@ class ImageCaptioningModel(nn.Module):
         Forward pass through the entire model: images -> EncoderCNN -> DecoderRNN -> captions
         """
         # Pass the images through the encoder
-        features = self.encoderCNN(images)
+        features = self.encoder(images)
         # Pass the features and captions through the decoder
-        outputs = self.decoderRNN(features, captions, length)
+        outputs = self.decoder(features, captions, length)
         return outputs
     def sample(self, images):
         """
         Generate captions for given image features using greedy search.
         """
         # Pass the images through the encoder to get features
-        features = self.encoderCNN(images)
+        features = self.encoder(images)
         
         # Generate captions using greedy search
-        sampled_ids = self.decoderRNN.sample(features)
+        sampled_ids = self.decoder.sample(features)
         return sampled_ids

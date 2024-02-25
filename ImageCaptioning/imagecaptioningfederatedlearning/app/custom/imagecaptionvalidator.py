@@ -1,3 +1,7 @@
+#adjust import path for system
+import sys
+#sys.path.append('/home/mvc/BryanExperiment/DeepLearningPractices/ImageCaptioning/')
+
 import torch
 import matplotlib.pyplot as plt
 import numpy as np 
@@ -8,12 +12,15 @@ from torchvision import transforms
 from build_vocab import Vocabulary
 from model import EncoderCNN, DecoderRNN, ImageCaptioningModel
 from PIL import Image
-import appConstants
 import torch.nn as nn
 from data_loader import get_loader
 from torch.nn.utils.rnn import pack_padded_sequence
+# from build_vocab import Vocabulary, build_vocab_main, load_vocab_from_another_file
+import build_vocab
 
-from nvflare.apis.flcontext import FLContext, Signal, ReturnCode
+from nvflare.apis.fl_context import FLContext
+from nvflare.apis.signal import Signal
+from nvflare.apis.fl_constant import ReturnCode
 from nvflare.apis.shareable import Shareable, make_reply #nvflare communicate weights in Shareable format
 from nvflare.apis.dxo import DXO, DataKind, from_shareable #dxo communicate the shareable
 from nvflare.apis.executor import Executor #task to be executed
@@ -26,11 +33,13 @@ class ImageCaptionValidator(Executor):
         self._validate_task_name = appConstants.TASK_VALIDATION
 
         # Setup the model# Load vocabulary wrapper
-        with open(appConstants.EXECUTABLE_ARGS['vocab_path'], 'rb') as f:
-            vocab = pickle.load(f)
+        #self.vocab = build_vocab_main(appConstants.EXECUTABLE_ARGS['caption_path'], appConstants.EXECUTABLE_ARGS['word_threshold'])
+        self.vocab = build_vocab.load_vocab_from_another_file(appConstants.EXECUTABLE_ARGS['new_vocab_path'])
+        # with open(appConstants.EXECUTABLE_ARGS['vocab_path'], 'rb') as f:
+        #     vocab = pickle.load(f)
 
         self.validating_setup = {
-            'model': ImageCaptioningModel(appConstants.EXECUTABLE_ARGS['embed_size'], appConstants.EXECUTABLE_ARGS['hidden_size'], len(vocab), appConstants.EXECUTABLE_ARGS['num_layers']),
+            'model': ImageCaptioningModel(appConstants.EXECUTABLE_ARGS['embed_size'], appConstants.EXECUTABLE_ARGS['hidden_size'], len(self.vocab), appConstants.EXECUTABLE_ARGS['num_layers']),
             'device': torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
             'loss': nn.CrossEntropyLoss(),
             'transform': transforms.Compose([ 
@@ -42,8 +51,8 @@ class ImageCaptionValidator(Executor):
         }
         self.validating_setup['model'].to(self.validating_setup['device'])
 
-        self.validating_setup['val_loader'] = get_loader(appConstants.EXECUTABLE_ARGS['validate_image_dir'], appConstants.EXECUTABLE_ARGS['validate_caption_path'], vocab, 
-                             self.training_setup['transform'], appConstants.EXECUTABLE_ARGS['batch_size'],
+        self.validating_setup['val_loader'] = get_loader(appConstants.EXECUTABLE_ARGS['validate_image_dir'], appConstants.EXECUTABLE_ARGS['validate_caption_path'], self.vocab, 
+                             self.validating_setup['transform'], appConstants.EXECUTABLE_ARGS['batch_size'],
                              shuffle=True, num_workers=appConstants.EXECUTABLE_ARGS['num_workers']) 
 
     def execute(self, task_name: str, shareable: Shareable, fl_ctx: FLContext, abort_signal: Signal) -> Shareable:

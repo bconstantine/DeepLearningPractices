@@ -1,62 +1,70 @@
-# Image Captioning
-Using Resnet-152 to encode the image and using RNN(LSTM based) to output the caption
-![alt text](png/model.png)
+# Federated Image Captioning with NVFlare
+This project demonstrates how to apply federated learning to the task of image captioning using NVFlare and PyTorch. By leveraging a federated learning approach, the project aims to train an image captioning model in a privacy-preserving manner, with the model training distributed across multiple clients without sharing their local data.
 
-#### Training phase
-For the encoder part, the pretrained CNN extracts the feature vector from a given input image. The feature vector is linearly transformed to have the same dimension as the input dimension of the LSTM network. For the decoder part, source and target texts are predefined. For example, if the image description is **"Giraffes standing next to each other"**, the source sequence is a list containing **['\<start\>', 'Giraffes', 'standing', 'next', 'to', 'each', 'other']** and the target sequence is a list containing **['Giraffes', 'standing', 'next', 'to', 'each', 'other', '\<end\>']**. Using these source and target sequences and the feature vector, the LSTM decoder is trained as a language model conditioned on the feature vector.
+##  Project Overview
+The project uses ResNet-152 as an encoder to extract feature vectors from images, and an LSTM-based RNN as a decoder to generate captions. The federated learning framework is managed by NVFlare, allowing for decentralized model training and aggregation using the FedAvg algorithm.
 
-#### Test phase
-In the test phase, the encoder part is almost same as the training phase. The only difference is that batchnorm layer uses moving average and variance instead of mini-batch statistics. This can be easily implemented using [encoder.eval()](https://github.com/yunjey/pytorch-tutorial/blob/master/tutorials/03-advanced/image_captioning/sample.py#L37). For the decoder part, there is a significant difference between the training phase and the test phase. In the test phase, the LSTM decoder can't see the image description. To deal with this problem, the LSTM decoder feeds back the previosly generated word to the next input. This can be implemented using a [for-loop](https://github.com/yunjey/pytorch-tutorial/blob/master/tutorials/03-advanced/image_captioning/model.py#L48).
+## Federated Learning Configuration
+This project utilizes client-side model initialization, ensuring that all participating clients start with the same model architecture but allow for customization in the initialization phase. The federated learning setup is configured to support pre-training, training, and cross-site validation workflows, enabling a comprehensive federated learning cycle.
 
+## Getting Started
+1. Install Dependencies
+    ```bash
+    pip install -r requirements.txt
+    ```
+2. Dataset Preparation
+    Download the COCO Caption 2014 dataset for image captioning:
+    ```bash
+    ./download.sh #make sure data is downloaded in ./data folder
+    ```
+3. Reformat the data (image size)
+    For vocab, we will built word2idx for all each word appear during training more than a certain threshold (default 4)
+    ```bash
+    #make sure train2014/, val2014/, annotations/ exist inside ./data folder from previous step
+    python build_vocab.py   #build vocab for training image
+    python resize_train_image.py #resize train image to 256x256 to ./data/resizedtrain2014 folder
+    python resize_train_image.py --image_dir './data/val2014' --output_dir './data/resizedval2014' #do the same to val images
+    ```
 
+4. Build Vocabulary word2idx for training
+    For vocab, we will built word2idx for all each word appear during training more than a certain threshold (default 4)
+     ```bash
+    #make sure train2014/, val2014/, annotations/ exist inside ./data folder from previous step
+    cd ./imagecaptioningfederatedlearning/app/custom/
+    python build_vocab.py   #build vocab for training image
+    ```
+5. Run the Federated Experiment
+    Utilize the NVFlare simulator to run the federated learning experiment with predefined configurations:
+    ```bash
+    cd ../../../ #root folder in /ImageCaptioning/
+    nvflare simulator -w /tmp/nvflare/ -n [number_of_clients] -t [number_of_training_rounds] ./imagecaptioningfederatedlearning/ 
+    # for example, fill number_of_clients as 2 and number_of_training_rounds as 2
+    ```
 
-## Step by step usage
-#### 1. Install Dependencies
-##### a. Install Pycocotools
-```bash
-git clone https://github.com/pdollar/coco.git
-cd coco/PythonAPI/
-make
-python setup.py build
-python setup.py install
-```
+6. Access Logs and Results
+    Check the simulation results and logs at the specified workspace directory:
+    ```
+    ls /tmp/nvflare/simulate_job/
+    ```
 
-##### b. Install requirements.txt
-```bash
-pip install -r requirements.txt
-```
+## Federated Learning Workflow Configuration
+There are two important configs for this project, each in imagecaptioningfederatedlearning/app/config for client side and server side configuration. 
 
-##### c. Download the COCO Dataset
-```bash
-pip install -r requirements.txt
-```
+The project defines three key workflows in the config_fed_server.json:
+- Pre-training for model initialization using the InitializeGlobalWeights controller.
+- Training via the ScatterAndGather controller.
+- Cross-site validation using the CrossSiteModelEval controller.
 
-#### 2. Download the dataset
-First, download the annotations for COCO Captions train and val 2014
-```bash
-chmod +x download.sh
-./download.sh
-```
+These workflows ensure that the model is initialized, trained, and evaluated in a federated manner, with all steps configured to preserve data privacy and security.
 
-#### 3. Preprocessing:
-Build Vocabulary (word and idx mapping) and image resize for training. By default it build vocab for every token (using NLTK Tokenizer) when a token appear >= 4 (from COCO Captions) and resize all train images to 256 x 256
-```bash
-python build_vocab.py   
-python resize_train_image.py
-```
+## Model Initialization Approach
+This project opts for client-side model initialization, where each client prepares its model instance before training begins. This strategy enhances security by avoiding server-side custom code execution and simplifies the initial setup process.
 
-#### 4. Train the model (With mock Federated Learning Applied)
-```bash
-python train.py    
-```
+## Running the Experiment
+To start the federated learning experiment, ensure that all configurations are set up correctly, including the server and clients' NVFlare configurations. Then, initiate the experiment using NVFlare commands, monitoring the process through the logs generated in the workspace.
 
-#### 5. Test the model (With Quantization applied)
+## Other notes
+In /imagecaptioningfederatedlearning/app/custom/, please refer to this folder for all the program components used for training pipeline. Refer to appConstants.py also to modify training parameters, file naming and locations, task names for NVFlare, etc. 
 
-```bash
-python inference.py --image='png/example.png'
-```
-
-<br>
-
-## Pretrained model
-If you do not want to train the model from scratch, you can use a pretrained model. You can download the pretrained model [here](https://www.dropbox.com/s/ne0ixz5d58ccbbz/pretrained_model.zip?dl=0) and the vocabulary file [here](https://www.dropbox.com/s/26adb7y9m98uisa/vocap.zip?dl=0). You should extract pretrained_model.zip to `./models/` and vocab.pkl to `./data/` using `unzip` command.
+## Conclusion
+By following the steps outlined, you can deploy a federated learning experiment that respects user privacy while leveraging the collective power of decentralized data for training sophisticated models.
