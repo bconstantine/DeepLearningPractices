@@ -31,8 +31,8 @@ EXECUTABLE_ARGS = {
     'num_layers':1, #number of layers in lstm
     
     #training parameters
-    'num_epochs':5,
-    'batch_size':128,
+    'num_epochs':1, #original: 5
+    'batch_size':128, #original: 128
     'num_workers':2,
     'learning_rate':0.001,
 }

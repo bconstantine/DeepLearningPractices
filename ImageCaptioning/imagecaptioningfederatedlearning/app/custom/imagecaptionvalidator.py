@@ -47,7 +47,8 @@ class ImageCaptionValidator(Executor):
                 transforms.RandomHorizontalFlip(), 
                 transforms.ToTensor(), 
                 transforms.Normalize((0.485, 0.456, 0.406), 
-                                    (0.229, 0.224, 0.225))])
+                                    (0.229, 0.224, 0.225))]),
+            'criterion': nn.CrossEntropyLoss(),
         }
         self.validating_setup['model'].to(self.validating_setup['device'])
 
@@ -131,9 +132,6 @@ class ImageCaptionValidator(Executor):
                 # Forward, backward and optimize
                 outputs = self.validating_setup['model'](images, captions, lengths)
                 loss = self.validating_setup['criterion'](outputs, targets)
-                self.validating_setup['optimizer'].zero_grad()
-                loss.backward()
-                self.validating_setup['optimizer'].step()
                 
                 lossAmount = loss.item()
                 perplexity = np.exp(lossAmount)
