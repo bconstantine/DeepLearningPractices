@@ -1,9 +1,10 @@
 import torch
 import torchvision.models
 from collections import namedtuple
-import inspect
 import os
 
+# Get the directory of the current module
+module_dir = os.path.dirname(__file__)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class LPIPS_5Layer(torch.nn.Module):
@@ -24,7 +25,8 @@ class LPIPS_5Layer(torch.nn.Module):
         self.one_x_one_convs = torch.nn.ModuleList([self.one_x_one_conv1, self.one_x_one_conv2, self.one_x_one_conv3, self.one_x_one_conv4, self.one_x_one_conv5])
         
         if not requires_grad:
-            model_path = "./weights/v0.1/vgg16.pth" #change to the one suitable
+            print("cwd: ", os.getcwd())
+            model_path = os.path.join(module_dir, "weights/vgg.pth")
             self.load_state_dict(torch.load(model_path, map_location=device), strict=False)
             self.eval()
             for param in self.parameters():
@@ -122,7 +124,7 @@ class OnexOneConv(torch.nn.Module):
         out = self.model(x)
         return out
     
-class ScalingLayer(torch.nn.module):
+class ScalingLayer(torch.nn.Module):
     def __init__(self):
         super(ScalingLayer, self).__init__()
         # Imagnet normalization for (0-1)

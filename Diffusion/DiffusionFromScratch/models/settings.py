@@ -52,13 +52,12 @@ class LatentConfig():
 
 
 class DownsampleBlockConfig():
-    def __init__(self, down_channels_list:list, layers_in_each_block:list, use_attn: bool, 
+    def __init__(self, down_channels_list:list, layers_in_each_block:list, 
                  resnet_settings:ResnetSettings, 
                  time_embedding_settings:TimeEmbeddingSettings, 
                  attention_block_settings: AttentionBlockSettings):
         self.down_channels_list = down_channels_list # channels of downblock in each repetition
         self.layers_in_each_block = layers_in_each_block # layers of resnet+self attn repetition in each down block
-        self.use_attn = use_attn #use self attention in the layers
         self.resnet_settings = resnet_settings
         self.time_embedding_settings = time_embedding_settings
         self.attention_block_settings = attention_block_settings
@@ -76,13 +75,21 @@ class MidBlockConfig():
         assert len(self.mid_channels_list) == len(self.layers_in_each_block) + 1
 
 class UpsampleBlockConfig():
-    def __init__(self, up_channels_list:list, layers_in_each_block:list, use_attn: bool,
+    def __init__(self, up_channels_list:list, layers_in_each_block:list,
                  resnet_settings:ResnetSettings, time_embedding_settings:TimeEmbeddingSettings, 
                  attention_block_settings: AttentionBlockSettings):
         self.up_channels_list = up_channels_list # channels of downblock in each repetition
         self.layers_in_each_block = layers_in_each_block # layers of resnet+self attn repetition in each down block
-        self.use_attn = use_attn #use self attention in the layers 
         self.resnet_settings = resnet_settings
         self.time_embedding_settings = time_embedding_settings
         self.attention_block_settings = attention_block_settings
         assert len(self.up_channels_list) == len(self.layers_in_each_block) + 1
+
+
+
+class DiscriminatorConfig():
+    def __init__(self, conv_channels_list:list, kernel_size_list: list, stride_list: list, padding_list: list):
+        self.conv_channels_list = conv_channels_list
+        self.kernel_size_list = kernel_size_list
+        self.stride_list = stride_list
+        self.padding_list = padding_list

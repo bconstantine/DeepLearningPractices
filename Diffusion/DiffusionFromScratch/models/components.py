@@ -1,9 +1,10 @@
 import torch
 
-from settings import ResnetSettings, TimeEmbeddingSettings, AttentionBlockSettings
+from .settings import ResnetSettings, TimeEmbeddingSettings, AttentionBlockSettings
 
 class DownsampleBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, layers_repetition,
+                 do_downsample: bool, 
                  resnet_settings: ResnetSettings, 
                  time_embedding_settings: TimeEmbeddingSettings = None,
                  attention_block_settings: AttentionBlockSettings = None,):
@@ -17,11 +18,12 @@ class DownsampleBlock(torch.nn.Module):
                 (Repetition of: resnet --> [Attention])
                 Note that the block enclosed by [] is optional
                 Finally, enclosed by 1x Downsample conv layer
+            do_downsample: bool --> whether downsample is done or not (compress h w dimension)
             resnet_settings: ResnetSettings --> Settings for the resnet block
             time_embedding_settings: TimeEmbeddingSettings --> Settings for the time embedding block
             attention_block_settings: AttentionBlockSettings --> Settings for the attention block
         """
-        super().__init__()
+        super(DownsampleBlock, self).__init__()
 
         #assertion
         assert resnet_settings.group_norm_channel_dim <= in_channels #GroupNorm channel dimension should be less than input channel dimension
@@ -32,7 +34,8 @@ class DownsampleBlock(torch.nn.Module):
         
         self.layers_repetition = layers_repetition
 
-        self.resnet_layers_before_timeembedding = torch.nn.Sequential(
+
+        self.resnet_layers_before_timeembedding = torch.nn.ModuleList(
             [
                 torch.nn.Sequential(
                     torch.nn.GroupNorm(resnet_settings.group_norm_channel_dim, in_channels if idx == 0 else out_channels),
@@ -103,7 +106,9 @@ class DownsampleBlock(torch.nn.Module):
             )
         
         #downsample the hxw dimension
-        self.downsample_conv = torch.nn.Conv2d(out_channels, out_channels, kernel_size=4, stride=2, padding = 1)
+        self.downsample_conv = torch.nn.Identity()
+        if do_downsample:
+            self.downsample_conv = torch.nn.Conv2d(out_channels, out_channels, kernel_size=4, stride=2, padding = 1)
 
     def forward(self, x, time_embedding=None):
         layer_output = x
@@ -151,6 +156,8 @@ class MidBlock(torch.nn.Module):
                 attention_block_settings: AttentionBlockSettings --> Settings for the attention block
                 time_embedding_settings: TimeEmbeddingSettings --> Settings for the time embedding block
         """
+        super(MidBlock, self).__init__()
+
         #assertion
         assert resnet_settings.group_norm_channel_dim <= in_channels #GroupNorm channel dimension should be less than input channel dimension
         assert attention_block_settings.attn_num_heads <= attention_block_settings.attn_embed_dim #Make the same to avoid adding another linear layer
@@ -289,7 +296,7 @@ class UpsampleBlock(torch.nn.Module):
             time_embedding_settings: TimeEmbeddingSettings --> Settings for the time embedding block
             attention_block_settings: AttentionBlockSettings --> Settings for the attention block
         """
-        super().__init__()
+        super(UpsampleBlock, self).__init__()
 
         #assertion
         assert resnet_settings.group_norm_channel_dim <= in_channels #GroupNorm channel dimension should be less than input channel dimension
@@ -376,7 +383,7 @@ class UpsampleBlock(torch.nn.Module):
             upsample_original_channel = in_channels //2
             # in channels will be original input.shape[1] + down_block_shape.shape[1], 
             #   hence this conv dim should be in_channels//2
-            self.upsample_conv = torch.nn.ConvTranspose2d(in_channels//2, in_channels//2, kernel_size=4, stride=2, padding = 1)
+            self.upsample_conv = torch.nn.ConvTranspose2d(upsample_original_channel, upsample_original_channel, kernel_size=4, stride=2, padding = 1)
 
     def forward(self, x, down_block_output = None, time_embedding=None):
         layer_output = x
@@ -410,6 +417,6 @@ class UpsampleBlock(torch.nn.Module):
                 #add identity of layer_output
                 layer_output = layer_output + attnOutput
         
-        layer_output = self.downsample_conv(layer_output)
+        layer_output = self.upsample_conv(layer_output)
         return layer_output
     

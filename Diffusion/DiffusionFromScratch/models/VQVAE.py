@@ -1,6 +1,6 @@
 import torch
-import components
-from settings import DownsampleBlockConfig, MidBlockConfig, UpsampleBlockConfig, \
+from . import components
+from .settings import DownsampleBlockConfig, MidBlockConfig, UpsampleBlockConfig, \
             LatentConfig
 
 
@@ -21,11 +21,12 @@ class VQVAE(torch.nn.Module):
         - Decoder section: 
             Conv --> MidBlock --> Upblock --> GroupNorm --> SiLU --> Conv
         """
+        super(VQVAE, self).__init__()
 
         #assertion of block sizes identical for encoder decoder
         assert len(down_block_config.down_channels_list) == len(up_block_config.up_channels_list)
         for idx in range(len(down_block_config.down_channels_list)):
-            assert down_block_config.down_channels_list[idx] == up_block_config.up_channels_list[-idx+1]
+            assert down_block_config.down_channels_list[idx] == up_block_config.up_channels_list[-idx-1]
         
         #assert connection channel size same
         assert down_block_config.down_channels_list[-1] == mid_block_config.mid_channels_list[0]
@@ -33,31 +34,27 @@ class VQVAE(torch.nn.Module):
 
         self.encoder_first_conv = torch.nn.Conv2d(3, down_block_config.down_channels_list[0], kernel_size=3, padding=1, stride = 1)
         
-
-        encoder_down_layer_list = [
-            components.DownsampleBlock(in_channels = down_block_config.down_channels_list[idx], 
+    
+        self.encoder_down_layers = torch.nn.ModuleList(
+            [components.DownsampleBlock(in_channels = down_block_config.down_channels_list[idx], 
                                         out_channels= down_block_config.down_channels_list[idx+1], 
                                         layers_repetition = down_block_config.layers_in_each_block[idx], 
+                                        do_downsample = True,
                                         resnet_settings= down_block_config.resnet_settings, 
                                         time_embedding_settings= down_block_config.time_embedding_settings,
                                         attention_block_settings = down_block_config.attention_block_settings)
-            for idx in range(len(down_block_config.layers_in_each_block))
-        ]
-        self.encoder_down_layers = torch.nn.Sequential(
-            *encoder_down_layer_list
+            for idx in range(len(down_block_config.layers_in_each_block))]
         )
 
-        encoder_mid_layer = [
-            components.MidBlock(mid_block_config.mid_channels_list[idx], 
+
+        self.encoder_mid_layers = torch.nn.ModuleList(
+             [components.MidBlock(mid_block_config.mid_channels_list[idx], 
                                 out_channels=mid_block_config.mid_channels_list[idx+1], 
                                 layers_repetition = mid_block_config.layers_in_each_block[idx],
                                 resnet_settings=mid_block_config.resnet_settings,
                                 attention_block_settings=mid_block_config.attention_block_settings, 
-                                time_embedding_settings=mid_block_config.attention_block_settings)
-            for idx in range(len(mid_block_config.layers_in_each_block))
-        ]
-        self.encoder_mid_layers = torch.nn.Sequential(
-            *encoder_mid_layer
+                                time_embedding_settings=mid_block_config.time_embedding_settings)
+            for idx in range(len(mid_block_config.layers_in_each_block))]
         )
 
         self.encoder_before_latent_layers = torch.nn.Sequential(
@@ -79,30 +76,26 @@ class VQVAE(torch.nn.Module):
                             kernel_size=3, padding=1, stride = 1)   
         )
 
-        decoder_mid_layer = [
-            components.MidBlock(mid_block_config.mid_channels_list[idx], 
+        self.decoder_mid_layers = torch.nn.ModuleList(
+            [components.MidBlock(mid_block_config.mid_channels_list[idx], 
                                 out_channels=mid_block_config.mid_channels_list[idx+1], 
                                 layers_repetition = mid_block_config.layers_in_each_block[idx],
                                 resnet_settings=mid_block_config.resnet_settings,
                                 attention_block_settings=mid_block_config.attention_block_settings, 
-                                time_embedding_settings=mid_block_config.attention_block_settings)
-            for idx in range(len(mid_block_config.layers_in_each_block))
-        ]
-        self.decoder_mid_layers = torch.nn.Sequential(
-            *decoder_mid_layer
+                                time_embedding_settings=mid_block_config.time_embedding_settings)
+            for idx in range(len(mid_block_config.layers_in_each_block))]
         )
 
-        decoder_up_layer_list = [
-            components.DownsampleBlock(in_channels = up_block_config.up_channels_list[idx], 
+        #although sequential is capable, we use ModuleList because we need to put multiple input in the forward
+        self.decoder_up_layers = torch.nn.ModuleList(
+            [components.UpsampleBlock(in_channels = up_block_config.up_channels_list[idx], 
                                         out_channels= up_block_config.up_channels_list[idx+1], 
                                         layers_repetition = up_block_config.layers_in_each_block[idx], 
+                                        do_upsample = True,
                                         resnet_settings= up_block_config.resnet_settings, 
                                         time_embedding_settings= up_block_config.time_embedding_settings,
                                         attention_block_settings = up_block_config.attention_block_settings)
-            for idx in range(len(up_block_config.layers_in_each_block))
-        ]
-        self.decoder_up_layers = torch.nn.Sequential(
-            *decoder_up_layer_list
+            for idx in range(len(up_block_config.layers_in_each_block))]
         )
 
         self.decoder_before_output = torch.nn.Sequential(
@@ -155,21 +148,27 @@ class VQVAE(torch.nn.Module):
 
     def encoder(self, x, time_embed = None):
         layerOutput = self.encoder_first_conv(x)
-        layerOutput = self.encoder_down_layers(layerOutput, time_embed)
-        layerOutput = self.encoder_mid_layers(layerOutput, time_embed)
+        for layer in self.encoder_down_layers:
+            layerOutput = layer(layerOutput, time_embed)
+        for layer in self.encoder_mid_layers:
+            layerOutput = layer(layerOutput, time_embed)
         layerOutput = self.encoder_before_latent_layers(layerOutput)
-        quantizedLatent, quantizedLosses = self.quantize(self, layerOutput)
-        return quantizedLatent, quantizedLosses
+        quantizedLatent, cookbook_losses, commitment_losses = self.quantize(self, layerOutput)
+        return quantizedLatent, cookbook_losses,commitment_losses
+    
     def decoder(self, x, time_embed = None):
         layerOutput = self.decoder_first_conv(x)
-        layerOutput = self.decoder_mid_layers(layerOutput, time_embed)
-        layerOutput = self.decoder_up_layers(layerOutput, time_embed)
+        for layer in self.decoder_mid_layers:
+            layerOutput = layer(layerOutput, time_embed)
+        for layer in self.decoder_up_layers:
+            layerOutput = layer(layerOutput, time_embed)
+
         layerOutput = self.decoder_before_output(layerOutput)
         return layerOutput
 
     def forward(self, x, time_embed = None):
-        encoder_quantized_latent, _ = self.encode(x, time_embed)
-        decoder_output = self.decode(encoder_quantized_latent, time_embed)
-        return decoder_output, encoder_quantized_latent
+        encoder_quantized_latent, cookbook_losses,commitment_losses = self.encoder(x, time_embed)
+        decoder_output = self.decoder(encoder_quantized_latent, time_embed)
+        return decoder_output, cookbook_losses, commitment_losses
     
 
