@@ -32,6 +32,7 @@ class LPIPS_5Layer(torch.nn.Module):
             for param in self.parameters():
                 param.requires_grad = False
 
+    @torch.no_grad()
     def forward(self, image1, image2, input_in_neg1_to_1=False):
         # Normalize images to 0-1
         if input_in_neg1_to_1:
@@ -95,7 +96,7 @@ class VGG16_5Slice(torch.nn.Module):
         if not requires_grad:
             for param in self.parameters():
                 param.requires_grad = False
-    
+    @torch.no_grad()
     def forward(self, X):
         # Return output of vgg features
         h = self.slice1(X)
