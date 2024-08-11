@@ -248,7 +248,7 @@ class MidBlock(torch.nn.Module):
         layer_output = self.resnet_layers_after_timeembedding[0](layer_output)
 
         #Add identity
-        layer_output = layer_output + self.residual_input_channel_transform[layerIdx](residual_input)
+        layer_output = layer_output + self.residual_input_channel_transform[0](residual_input)
 
         for layerIdx in range(self.layers_repetition):
             #attention block is 3D, so h and w is usually flattened (h*w)
