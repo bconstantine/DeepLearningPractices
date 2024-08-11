@@ -8,9 +8,20 @@ from models import settings
 from tqdm import tqdm
 import os
 from datetime import datetime
+import argparse
+import json
+
+def format_needed_gpu(multi_device_gpu_count: int, cuda_device_count: int) -> str:
+    if torch.cuda.is_available():
+        if multi_device_gpu_count < cuda_device_count:
+            return f"cuda:{multi_device_gpu_count}"
+        else:
+            return "cuda"
+    else:
+        return "cpu"
 
 def train_vqvae(torchvision_dataset_name: str = "LFWPeople", 
-                batch_size: int = 128, 
+                batch_size: int = 128, #decrease batch size
                 image_size: int = 256,
                 data_root_path = "./data", 
                 num_epochs: int = 20,
@@ -24,9 +35,19 @@ def train_vqvae(torchvision_dataset_name: str = "LFWPeople",
                 discriminator_lr: float = 5e-6,
                 model_save_path: str = "./model_output",
                 save_partial_checkpoint_epoch: int = 0, #set to 0 if you don't want to save partial checkpoints
+                custom_gpu_mapping = {"LPIPS": 1, "VQVAE": 0, "Discriminator": 0}
                 ):
-    
-    device="cuda" if torch.cuda.is_available() else "cpu"
+    cuda_device_count = torch.cuda.device_count()
+    if cuda_device_count > 1:
+        print(f"Using {cuda_device_count} GPUs")
+    elif torch.cuda.is_available():
+        print("Using 1 GPU")
+    else:
+        print("Using CPU")
+
+    """GPU Strategy: (In case there is 2 GPUs)
+    1"""
+
     combine_dataset, dataloader = torchvision_datasets.prepare_torch_default_image(torchvision_dataset_name, 
                                                               batch_size, 
                                                               image_size,
@@ -68,14 +89,14 @@ def train_vqvae(torchvision_dataset_name: str = "LFWPeople",
                         mid_block_config, 
                         up_block_config, 
                         latent_config, 
-                        enc_dec_final_groupnorm_channel_dim).to(device)
+                        enc_dec_final_groupnorm_channel_dim).to(format_needed_gpu(custom_gpu_mapping["VQVAE"], cuda_device_count))
     generator_l2_criterion = torch.nn.MSELoss()
     generator_optimizer = torch.optim.Adam(VQVAE_model.parameters(), lr = vqvae_lr, 
                                               betas=(0.5, 0.999))
     
     print("VQVAE model loaded")
 
-    lpips_model = LPIPS_5Layer().eval().to(device)
+    lpips_model = LPIPS_5Layer().eval().to(format_needed_gpu(custom_gpu_mapping["LPIPS"], cuda_device_count))
 
 
     discriminator_config = settings.DiscriminatorConfig(
@@ -84,7 +105,7 @@ def train_vqvae(torchvision_dataset_name: str = "LFWPeople",
         stride_list = [2, 2, 2, 1],
         padding_list = [1, 1, 1, 1]
     )
-    discriminator_model = PatchGANDiscriminator(discriminator_config, im_channels = 3).to(device)
+    discriminator_model = PatchGANDiscriminator(discriminator_config, im_channels = 3).to(format_needed_gpu(custom_gpu_mapping["Discriminator"], cuda_device_count))
     discriminator_criterion = torch.nn.BCEWithLogitsLoss() #each patch to indicate real of fake
     discriminator_optimizer = torch.optim.Adam(discriminator_model.parameters(), lr = discriminator_lr, 
                                                betas=(0.5, 0.999))
@@ -101,7 +122,7 @@ def train_vqvae(torchvision_dataset_name: str = "LFWPeople",
             
             iterations += 1
 
-            image_batch = image_batch.to(device)
+            image_batch = image_batch.to(format_needed_gpu(custom_gpu_mapping["VQVAE"], cuda_device_count))
             # Train the generator
             generator_optimizer.zero_grad()
             discriminator_optimizer.zero_grad()
@@ -114,14 +135,19 @@ def train_vqvae(torchvision_dataset_name: str = "LFWPeople",
             #activate the discriminator after some iterations for generator update
             if iterations > discriminator_start_update:
                 #used for adding to generator loss
+                generated_result = generated_result.to(format_needed_gpu(custom_gpu_mapping["Discriminator"], cuda_device_count))
                 discriminator_result_generated_img= discriminator_model(generated_result)
                 #we want the discriminator to think that the generated image is real (1)
-                discriminator_target_for_generator_loss = torch.ones_like(discriminator_result_generated_img).to(device)
+                discriminator_target_for_generator_loss = torch.ones_like(discriminator_result_generated_img).to(
+                    format_needed_gpu(custom_gpu_mapping["Discriminator"], cuda_device_count))
                 
                 discriminator_loss = discriminator_criterion(discriminator_result_generated_img, discriminator_target_for_generator_loss)
+                discriminator_loss = discriminator_loss.to(format_needed_gpu(custom_gpu_mapping["VQVAE"], cuda_device_count))
                 generator_loss += discriminator_loss * discriminator_loss_scale_for_generator
             
             #lpips loss for generator perceptual loss
+            generated_result = generated_result.to(format_needed_gpu(custom_gpu_mapping["LPIPS"], cuda_device_count))
+            image_batch = image_batch.to(format_needed_gpu(custom_gpu_mapping["LPIPS"], cuda_device_count))
             lpips_loss = lpips_model(generated_result, image_batch)
             generator_loss += lpips_loss
 
@@ -132,10 +158,13 @@ def train_vqvae(torchvision_dataset_name: str = "LFWPeople",
             #discriminator learning
             if iterations > discriminator_start_update: 
                 #since we have batch norm in, it is better that we feed the same image type to the discriminator
-                discriminator_result_generated_img = discriminator_model(generated_result.detach()) #why detach? just to speed up training (we don't need to track the loss for generator)
+                discriminator_result_generated_img = discriminator_model(
+                    generated_result.detach().to(format_needed_gpu(custom_gpu_mapping["Discriminator", cuda_device_count]))) #why detach? just to speed up training (we don't need to track the loss for generator)
                 discriminator_result_real_img = discriminator_model(image_batch)
-                discriminator_target_for_real_img = torch.ones_like(discriminator_result_real_img).to(device)
-                discriminator_target_for_generated_img = torch.zeros_like(discriminator_result_generated_img).to(device)
+                discriminator_target_for_real_img = torch.ones_like(discriminator_result_real_img).to(
+                    format_needed_gpu(custom_gpu_mapping["Discriminator", cuda_device_count]))
+                discriminator_target_for_generated_img = torch.zeros_like(discriminator_result_generated_img).to(
+                    format_needed_gpu(custom_gpu_mapping["Discriminator", cuda_device_count]))
 
                 discriminator_loss = discriminator_loss_scale_for_discriminator* (discriminator_criterion(discriminator_result_real_img, discriminator_target_for_real_img) + \
                                     discriminator_criterion(discriminator_result_generated_img, discriminator_target_for_generated_img))
@@ -163,4 +192,11 @@ def train_vqvae(torchvision_dataset_name: str = "LFWPeople",
         
 
 if __name__ == "__main__":
-    train_vqvae()
+    argParser = argparse.ArgumentParser()
+    argParser.add_argument("--batch_size", type=int, default=128)
+    argParser.add_argument("--custom_gpu_mapping", type=json.loads, default={"LPIPS": 1, "VQVAE": 0, "Discriminator": 0})
+    argVal = argParser.parse_args()
+    print("Batch size: ", argVal.batch_size)
+    print("Custom GPU Mapping: ", argVal.custom_gpu_mapping)
+    train_vqvae(batch_size=argVal.batch_size,
+                custom_gpu_mapping=argVal.custom_gpu_mapping)
