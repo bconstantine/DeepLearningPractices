@@ -202,7 +202,7 @@ class MidBlock(torch.nn.Module):
                                     padding=1,
                                     stride=1)
                 )
-                for _ in range(layers_repetition) #+1 due to we have extra resnet in the beginning
+                for _ in range(layers_repetition+1) #+1 due to we have extra resnet in the beginning
             ]
         )
 
@@ -210,7 +210,7 @@ class MidBlock(torch.nn.Module):
         self.residual_input_channel_transform = self.residual_input_conv = torch.nn.ModuleList(
             [
                 torch.nn.Conv2d(in_channels if idx == 0 else out_channels, out_channels, kernel_size=1)
-                for idx in range(layers_repetition) #+1 due to we have extra resnet in the beginning
+                for idx in range(layers_repetition+1) #+1 due to we have extra resnet in the beginning
             ]
         )
 
