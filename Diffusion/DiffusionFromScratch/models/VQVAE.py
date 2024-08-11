@@ -153,7 +153,7 @@ class VQVAE(torch.nn.Module):
         for layer in self.encoder_mid_layers:
             layerOutput = layer(layerOutput, time_embed)
         layerOutput = self.encoder_before_latent_layers(layerOutput)
-        quantizedLatent, cookbook_losses, commitment_losses = self.quantize(self, layerOutput)
+        quantizedLatent, cookbook_losses, commitment_losses = self.quantize(layerOutput)
         return quantizedLatent, cookbook_losses,commitment_losses
     
     def decoder(self, x, time_embed = None):
