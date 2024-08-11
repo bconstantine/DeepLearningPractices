@@ -307,12 +307,13 @@ class UpsampleBlock(torch.nn.Module):
         
         self.layers_repetition = layers_repetition
 
+        firstResnetChannel = in_channels*2 #concatenated channel from down block
         self.resnet_layers_before_timeembedding = torch.nn.ModuleList(
             [
                 torch.nn.Sequential(
-                    torch.nn.GroupNorm(resnet_settings.group_norm_channel_dim, in_channels if idx == 0 else out_channels),
+                    torch.nn.GroupNorm(resnet_settings.group_norm_channel_dim, firstResnetChannel if idx == 0 else out_channels),
                     torch.nn.SiLU(),
-                    torch.nn.Conv2d(in_channels if idx ==0 else out_channels, out_channels, 
+                    torch.nn.Conv2d(firstResnetChannel if idx ==0 else out_channels, out_channels, 
                                     kernel_size=3, 
                                     padding=1,
                                     stride=1)
@@ -350,7 +351,7 @@ class UpsampleBlock(torch.nn.Module):
         #For projecting possible mismatch of channel for residual input (especially first layer)
         self.residual_input_channel_transform = self.residual_input_conv = torch.nn.ModuleList(
             [
-                torch.nn.Conv2d(in_channels if idx == 0 else out_channels, out_channels, kernel_size=1)
+                torch.nn.Conv2d(firstResnetChannel if idx == 0 else out_channels, out_channels, kernel_size=1)
                 for idx in range(layers_repetition)
             ]
         )
@@ -376,20 +377,20 @@ class UpsampleBlock(torch.nn.Module):
                     for _ in range(layers_repetition)
                 ]
             )
-        
-        #downsample the hxw dimension
+
+        #upsample the hw dimension
         self.upsample_conv = torch.nn.Identity()
         if do_upsample:
-            upsample_original_channel = in_channels //2
+            upsample_original_channel = out_channels
             # in channels will be original input.shape[1] + down_block_shape.shape[1], 
             #   hence this conv dim should be in_channels//2
             self.upsample_conv = torch.nn.ConvTranspose2d(upsample_original_channel, upsample_original_channel, kernel_size=4, stride=2, padding = 1)
 
     def forward(self, x, down_block_output = None, time_embedding=None):
         layer_output = x
-        layer_output = self.upsample_conv(layer_output)
+        #layer_output = self.upsample_conv(layer_output)
 
-        if down_block_output:
+        if down_block_output != None:
             layer_output = torch.cat([layer_output, down_block_output], dim = 1) #append on channel dim
         
 

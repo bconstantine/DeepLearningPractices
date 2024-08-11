@@ -128,6 +128,7 @@ def train_vqvae(torchvision_dataset_name: str = "LFWPeople",
             discriminator_optimizer.zero_grad()
             
             generated_result, cookbook_losses, commitment_losses = VQVAE_model(image_batch)
+
             generator_loss = generator_l2_criterion(generated_result, image_batch) + \
                                 codebook_loss_scale * cookbook_losses + \
                                 commitment_loss_scale * commitment_losses

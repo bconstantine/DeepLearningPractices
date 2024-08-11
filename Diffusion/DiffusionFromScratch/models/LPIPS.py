@@ -44,15 +44,15 @@ class LPIPS_5Layer(torch.nn.Module):
         pretrained_net_out1, pretrained_net_out2 = self.feature_net(normed_image1), self.feature_net(normed_image2)
         
         # Compute LPIPS
-        normalized_out0, normalized_out1, diffs, layer_final_difference = [], [], []
+        normalized_out0, normalized_out1, diffs, layer_final_difference = [], [], [], []
         ########################
         
         # Compute Square of Difference for each 5 layer output
         for idx in range(5):
             #integral part of LPIPS: Normalize the output on the channel layer 
             #this way it focus more on the image pattern rather than the intensity
-            normalized_out0.append(torch.nn.functional.normalize(pretrained_net_out1[idx]), dim=1) #normalize on the channel
-            normalized_out1.append(torch.nn.functional.normalize(pretrained_net_out2[idx]), dim=1) #normalize on the channel
+            normalized_out0.append(torch.nn.functional.normalize(pretrained_net_out1[idx], dim=1)) #normalize on the channel
+            normalized_out1.append(torch.nn.functional.normalize(pretrained_net_out2[idx], dim=1)) #normalize on the channel
             diffs.append((normalized_out0[idx] - normalized_out1[idx]) ** 2)
             
             #1x1 conv
@@ -64,7 +64,7 @@ class LPIPS_5Layer(torch.nn.Module):
         LPIPS_value = 0
         for idx in range(5):
             LPIPS_value += layer_final_difference[idx]
-        return LPIPS_value
+        return LPIPS_value.squeeze()
 
         
 

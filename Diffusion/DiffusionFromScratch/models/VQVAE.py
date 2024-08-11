@@ -70,7 +70,7 @@ class VQVAE(torch.nn.Module):
         self.decoder_first_conv = torch.nn.Sequential(
             torch.nn.Conv2d(latent_config.latent_channel_dim, 
                             latent_config.latent_channel_dim,
-                            kernel_size = 1, padding=1, stride = 1),
+                            kernel_size = 1),
             torch.nn.Conv2d(latent_config.latent_channel_dim, 
                             mid_block_config.mid_channels_list[-1], 
                             kernel_size=3, padding=1, stride = 1)   
@@ -129,7 +129,7 @@ class VQVAE(torch.nn.Module):
         indices_minimum_distance = torch.argmin(distance_matrix, dim = -1)
 
         #select embedding weights, this will create [B*H*W, C]
-        quantized_output = torch.index_select(self.learnable_embeddings, 0, indices_minimum_distance.view(-1))
+        quantized_output = torch.index_select(self.learnable_embeddings.weight, 0, indices_minimum_distance.view(-1))
         
         #to avoid uncertainty during learning, when we are updating one of the weights, the others as standard is frozen
         #e.g. cookbook_losses = updating the embedding cookbook vectors, which will frozen the encoder output
@@ -148,27 +148,29 @@ class VQVAE(torch.nn.Module):
 
     def encoder(self, x, time_embed = None):
         layerOutput = self.encoder_first_conv(x)
+        downsampleOutputs = []
         for layer in self.encoder_down_layers:
             layerOutput = layer(layerOutput, time_embed)
+            downsampleOutputs.append(layerOutput)
         for layer in self.encoder_mid_layers:
             layerOutput = layer(layerOutput, time_embed)
         layerOutput = self.encoder_before_latent_layers(layerOutput)
         quantizedLatent, cookbook_losses, commitment_losses = self.quantize(layerOutput)
-        return quantizedLatent, cookbook_losses,commitment_losses
+        return quantizedLatent, cookbook_losses,commitment_losses, downsampleOutputs
     
-    def decoder(self, x, time_embed = None):
+    def decoder(self, x, time_embed = None, downsampleOutputs = None):
         layerOutput = self.decoder_first_conv(x)
         for layer in self.decoder_mid_layers:
             layerOutput = layer(layerOutput, time_embed)
-        for layer in self.decoder_up_layers:
-            layerOutput = layer(layerOutput, time_embed)
+        for layerIdx in range(len(self.decoder_up_layers)):
+            layerOutput = self.decoder_up_layers[layerIdx](layerOutput, downsampleOutputs[-layerIdx-1], time_embed)
 
         layerOutput = self.decoder_before_output(layerOutput)
         return layerOutput
 
     def forward(self, x, time_embed = None):
-        encoder_quantized_latent, cookbook_losses,commitment_losses = self.encoder(x, time_embed)
-        decoder_output = self.decoder(encoder_quantized_latent, time_embed)
+        encoder_quantized_latent, cookbook_losses,commitment_losses, downsampleOutputs = self.encoder(x, time_embed)
+        decoder_output = self.decoder(encoder_quantized_latent, time_embed, downsampleOutputs)
         return decoder_output, cookbook_losses, commitment_losses
     
 
